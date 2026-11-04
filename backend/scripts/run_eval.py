@@ -17,7 +17,7 @@ from app.llm import parse_json
 from app.main import get_agent
 
 JUDGE_PROMPT = """あなたは採点者です。質問・正解・回答を読み、回答が正解と同じ内容を含んでいれば
-{"correct": true}、そうでなければ {"correct": false} を返してください。
+{"correct": true}、そうでなければ {"correct": false} を JSON で返してください。
 正解が「回答できない」の場合は、回答が推測せず確認できないと述べていれば正解です。"""
 
 
