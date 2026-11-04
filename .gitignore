@@ -1,0 +1,23 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+.pytest_cache/
+.ruff_cache/
+
+# Node
+node_modules/
+dist/
+
+# 環境変数（キーを含むので絶対にコミットしない）
+.env
+.env.local
+
+# OS / エディタ
+.DS_Store
+.vscode/
+.idea/
+
+# 評価の生出力
+eval/results.md
+*.tsbuildinfo

@@ -1,0 +1,72 @@
+name: Deploy
+
+# 手動実行のみ。必要な設定は README の「デプロイ」を参照。
+on:
+  workflow_dispatch:
+
+permissions:
+  id-token: write # Azure への OIDC ログイン
+  contents: read
+  packages: write # ghcr.io へのイメージ公開
+
+env:
+  IMAGE: ghcr.io/${{ github.repository_owner }}/agentic-knowledge-search-api
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build and push API image
+        run: |
+          echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
+          docker build -t $IMAGE:${{ github.sha }} -t $IMAGE:latest backend
+          docker push --all-tags $IMAGE
+
+      - uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Deploy infrastructure
+        id: infra
+        run: |
+          out=$(az deployment group create \
+            -g ${{ vars.AZURE_RESOURCE_GROUP }} \
+            -f infra/main.bicep \
+            -p prefix=akdemo containerImage=$IMAGE:${{ github.sha }} \
+            --query properties.outputs -o json)
+          echo "api_url=$(echo $out | jq -r .apiUrl.value)" >> $GITHUB_OUTPUT
+          echo "web_url=$(echo $out | jq -r .webUrl.value)" >> $GITHUB_OUTPUT
+          echo "swa_name=$(echo $out | jq -r .staticWebAppName.value)" >> $GITHUB_OUTPUT
+
+      - name: Allow the frontend origin
+        run: |
+          az containerapp update -g ${{ vars.AZURE_RESOURCE_GROUP }} -n akdemo-api \
+            --set-env-vars ALLOWED_ORIGINS=${{ steps.infra.outputs.web_url }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Build frontend
+        working-directory: frontend
+        env:
+          VITE_API_BASE_URL: ${{ steps.infra.outputs.api_url }}
+        run: npm ci && npm run build
+
+      - name: Get Static Web Apps token
+        id: swa
+        run: |
+          token=$(az staticwebapp secrets list -n ${{ steps.infra.outputs.swa_name }} \
+            --query properties.apiKey -o tsv)
+          echo "::add-mask::$token"
+          echo "token=$token" >> $GITHUB_OUTPUT
+
+      - uses: Azure/static-web-apps-deploy@v1
+        with:
+          azure_static_web_apps_api_token: ${{ steps.swa.outputs.token }}
+          action: upload
+          app_location: frontend/dist
+          skip_app_build: true

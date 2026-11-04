@@ -1,0 +1,30 @@
+export type Mode = "agent" | "baseline";
+
+export interface Citation {
+  number: number;
+  title: string;
+  source: string;
+  excerpt: string;
+}
+
+export interface TraceStep {
+  kind: "plan" | "search" | "judge" | "answer";
+  detail: string;
+  queries: string[];
+  hits: number;
+}
+
+export interface Usage {
+  prompt_tokens: number;
+  completion_tokens: number;
+  llm_calls: number;
+}
+
+export interface AskResponse {
+  answer: string;
+  citations: Citation[];
+  trace: TraceStep[];
+  usage: Usage;
+  latency_ms: number;
+  mode: Mode;
+}
