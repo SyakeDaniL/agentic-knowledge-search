@@ -3,7 +3,7 @@
   "contentVersion": "1.0.0.0",
   "parameters": {
     "prefix": { "value": "akdemo" },
-    "containerImage": { "value": "ghcr.io/<your-github-user>/agentic-knowledge-search-api:latest" },
+    "containerImage": { "value": "ghcr.io/syakedanil/agentic-knowledge-search-api:latest" },
     "allowedOrigins": { "value": "" },
     "dailyRequestLimit": { "value": 30 }
   }
