@@ -14,14 +14,14 @@ from __future__ import annotations
 
 import re
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from . import prompts
 from .llm import LLM, parse_json
 from .models import AskResponse, Chunk, Citation, TraceStep, Usage
 from .search import Retriever
 
-MAX_CONTEXT_CHUNKS = 8
+MAX_CONTEXT_CHUNKS = 12
 
 
 @dataclass
@@ -30,6 +30,7 @@ class _State:
     trace: list[TraceStep]
     usage: Usage
     seen_queries: set[str]
+    hits_by_query: list[list[Chunk]] = field(default_factory=list)
 
 
 class KnowledgeAgent:
@@ -139,7 +140,9 @@ class KnowledgeAgent:
         added = 0
         for q in new_queries:
             state.seen_queries.add(q)
-            for chunk in self._retriever.search(q, self._top_k):
+            hits = self._retriever.search(q, self._top_k)
+            state.hits_by_query.append(hits)
+            for chunk in hits:
                 if chunk.id not in known_ids:
                     state.chunks.append(chunk)
                     known_ids.add(chunk.id)
@@ -160,7 +163,7 @@ class KnowledgeAgent:
                 {
                     "role": "user",
                     "content": f"質問: {question}\n\n文書:\n"
-                    + prompts.format_context(state.chunks[:MAX_CONTEXT_CHUNKS]),
+                    + prompts.format_context(_select_context(state)),
                 },
             ],
             json_mode=True,
@@ -180,7 +183,7 @@ class KnowledgeAgent:
         return sufficient, next_queries
 
     def _answer(self, question: str, state: _State) -> tuple[str, list[Citation]]:
-        context_chunks = state.chunks[:MAX_CONTEXT_CHUNKS]
+        context_chunks = _select_context(state)
         if not context_chunks:
             state.trace.append(TraceStep(kind="answer", detail="根拠なし"))
             return "社内文書からは確認できませんでした", []
@@ -199,6 +202,25 @@ class KnowledgeAgent:
         citations = _citations_from(text, context_chunks)
         state.trace.append(TraceStep(kind="answer", detail=f"出典{len(citations)}件で回答を作成"))
         return text.strip(), citations
+
+
+def _select_context(state: _State) -> list[Chunk]:
+    """各クエリの上位から1件ずつ順に取り、上限まで集める。
+
+    先頭から切るだけだと、後から追加で検索した結果（改定のお知らせなど）が
+    上限からあふれて judge にも answer にも渡らないため。
+    """
+    picked: list[Chunk] = []
+    seen: set[str] = set()
+    depth = max((len(h) for h in state.hits_by_query), default=0)
+    for rank in range(depth):
+        for hits in state.hits_by_query:
+            if rank < len(hits) and hits[rank].id not in seen:
+                picked.append(hits[rank])
+                seen.add(hits[rank].id)
+                if len(picked) == MAX_CONTEXT_CHUNKS:
+                    return picked
+    return picked
 
 
 def _clean_queries(raw: object) -> list[str]:

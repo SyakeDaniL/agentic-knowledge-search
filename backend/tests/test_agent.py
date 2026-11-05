@@ -157,3 +157,23 @@ def test_api_health_and_rate_limit():
     assert first.status_code == 200
     second = client.post("/api/ask", json={"question": "質問", "mode": "baseline"})
     assert second.status_code == 429
+
+
+def test_follow_up_search_results_reach_the_answer_even_when_context_is_full():
+    first = [Chunk(id=f"r{i}", title=f"規程{i}", content="…", source=f"r{i}.md") for i in range(10)]
+    revision = Chunk(id="rev", title="改定のお知らせ", content="5万円に引き上げ。", source="rev.md")
+    llm = FakeLLM(
+        [
+            json.dumps({"queries": ["備品 補助"]}),
+            json.dumps({"sufficient": False, "missing": "改定", "next_queries": ["備品 改定"]}),
+            json.dumps({"sufficient": True, "missing": "", "next_queries": []}),
+            "5万円です[1]。",
+        ]
+    )
+    retriever = FakeRetriever({"備品 補助": first, "備品 改定": [revision]})
+    agent = KnowledgeAgent(llm, retriever, max_iterations=3, top_k=10)
+
+    agent.ask_agent("モニターの補助はいくら？")
+
+    answer_prompt = llm.calls[-1][-1]["content"]
+    assert "改定のお知らせ" in answer_prompt
