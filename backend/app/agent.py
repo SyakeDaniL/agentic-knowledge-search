@@ -1,10 +1,13 @@
-"""エージェント型RAGと、比較用の単純なRAG。
+"""エージェント型RAG、比較用の単純なRAG、その2つを振り分ける自動モード。
 
 エージェントの流れ:
   1. plan   : 質問を分解して検索クエリを作る
   2. search : 各クエリでハイブリッド検索する
   3. judge  : 根拠が足りるか判定し、足りなければ 2 に戻る（最大 max_iterations 回）
   4. answer : 集めた文書だけを根拠に、出典つきで回答する
+
+自動モード（auto）は、最初に質問を simple / complex に分類し、
+simple は単純なRAG、complex はエージェントで答える。精度と速度・費用の両立が目的。
 """
 
 from __future__ import annotations
@@ -39,6 +42,26 @@ class KnowledgeAgent:
         self._top_k = top_k
 
     # ---- 公開メソッド ----
+
+    def ask(self, question: str, mode: str = "auto") -> AskResponse:
+        if mode == "baseline":
+            return self.ask_baseline(question)
+        if mode == "agent":
+            return self.ask_agent(question)
+        return self.ask_auto(question)
+
+    def ask_auto(self, question: str) -> AskResponse:
+        """質問を振り分けてから、単純なRAGかエージェントで答える。"""
+        started = time.perf_counter()
+        route, reason, usage = self._route(question)
+        res = self.ask_agent(question) if route == "complex" else self.ask_baseline(question)
+        label = "複雑な質問 → エージェント" if route == "complex" else "単純な質問 → 単純なRAG"
+        res.trace.insert(0, TraceStep(kind="route", detail=f"{label}（{reason}）"))
+        res.usage.add(usage)
+        res.mode = "auto"
+        res.route = route
+        res.latency_ms = int((time.perf_counter() - started) * 1000)
+        return res
 
     def ask_agent(self, question: str) -> AskResponse:
         started = time.perf_counter()
@@ -80,6 +103,20 @@ class KnowledgeAgent:
         )
 
     # ---- 各ステップ ----
+
+    def _route(self, question: str) -> tuple[str, str, Usage]:
+        text, usage = self._llm.chat(
+            [
+                {"role": "system", "content": prompts.ROUTE_SYSTEM},
+                {"role": "user", "content": question},
+            ],
+            json_mode=True,
+        )
+        data = parse_json(text)
+        # 判定に失敗したら、取りこぼしを避けるためエージェントに回す
+        route = "simple" if data.get("route") == "simple" else "complex"
+        reason = str(data.get("reason", "")).strip() or "判定なし"
+        return route, reason, usage
 
     def _plan(self, question: str, state: _State) -> list[str]:
         text, usage = self._llm.chat(

@@ -29,7 +29,7 @@ class Citation(BaseModel):
 class TraceStep(BaseModel):
     """画面に表示するエージェントの処理ステップ。"""
 
-    kind: Literal["plan", "search", "judge", "answer"]
+    kind: Literal["route", "plan", "search", "judge", "answer"]
     detail: str
     queries: list[str] = Field(default_factory=list)
     hits: int = 0
@@ -46,9 +46,13 @@ class Usage(BaseModel):
         self.llm_calls += other.llm_calls
 
 
+Mode = Literal["auto", "agent", "baseline"]
+Route = Literal["simple", "complex"]
+
+
 class AskRequest(BaseModel):
     question: str = Field(min_length=1, max_length=500)
-    mode: Literal["agent", "baseline"] = "agent"
+    mode: Mode = "auto"
 
 
 class AskResponse(BaseModel):
@@ -57,4 +61,5 @@ class AskResponse(BaseModel):
     trace: list[TraceStep]
     usage: Usage
     latency_ms: int
-    mode: Literal["agent", "baseline"]
+    mode: Mode
+    route: Route | None = None  # auto モードで振り分けた先

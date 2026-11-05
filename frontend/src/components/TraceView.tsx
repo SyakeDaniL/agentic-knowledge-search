@@ -1,6 +1,7 @@
 import type { TraceStep } from "../types";
 
 const LABELS: Record<TraceStep["kind"], string> = {
+  route: "振分",
   plan: "計画",
   search: "検索",
   judge: "判定",

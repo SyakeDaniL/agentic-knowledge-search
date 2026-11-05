@@ -54,9 +54,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             raise HTTPException(
                 status_code=429, detail="本日の利用上限に達しました。明日またお試しください。"
             )
-        if body.mode == "baseline":
-            return agent.ask_baseline(body.question)
-        return agent.ask_agent(body.question)
+        return agent.ask(body.question, body.mode)
 
     return app
 

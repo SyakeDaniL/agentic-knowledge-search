@@ -1,50 +1,167 @@
-"""評価セットで、エージェント型RAGと単純なRAGを比べる。
+"""評価セットで、単純なRAG・エージェント型RAG・自動モードを比べる。
 
 使い方（backend フォルダで）:
-    python -m scripts.run_eval --eval ../eval/eval_set.jsonl --out ../eval/results.md
+    python -m scripts.run_eval
+    python -m scripts.run_eval --top-k 3            # 検索で取る件数を絞って難しくする
+    python -m scripts.run_eval --modes baseline,auto --limit 10
 
-各質問について両方のモードで回答を作り、LLM に「正解と同じ内容か」を判定させて
-正答率・平均応答時間・平均トークン数を Markdown の表で出力する。
+測るもの:
+- 正答率: LLM に「回答が正解と同じ内容か」を採点させる
+- 出典の正しさ: 評価セットの sources に書いた文書を、回答の出典に含めているか
+  （"a.md|b.md" はどちらか一方でよい。答えがない質問は対象外）
+- 平均応答時間・平均トークン数
+- 自動モードが、どれだけの質問をエージェントに回したか
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+from collections import defaultdict
+from dataclasses import dataclass
 from pathlib import Path
 
 from app.llm import parse_json
-from app.main import get_agent
+
+MODES = ("baseline", "agent", "auto")
+MODE_LABELS = {"baseline": "単純なRAG", "agent": "エージェント型RAG", "auto": "自動（振り分け）"}
+TYPE_LABELS = {
+    "single": "1つの文書",
+    "multi_hop": "複数の文書",
+    "revision": "改定の反映",
+    "hard": "惑わせる文書あり",
+    "unanswerable": "答えがない",
+}
 
 JUDGE_PROMPT = """あなたは採点者です。質問・正解・回答を読み、回答が正解と同じ内容を含んでいれば
 {"correct": true}、そうでなければ {"correct": false} を JSON で返してください。
-正解が「回答できない」の場合は、回答が推測せず確認できないと述べていれば正解です。"""
+正解が「回答できない」の場合は、回答が推測せず確認できないと述べていれば正解です。
+正解に含まれない余分な説明があっても、正解と矛盾しなければ正解とします。"""
+
+
+@dataclass
+class Record:
+    id: str
+    type: str
+    mode: str
+    correct: bool
+    citation_ok: bool | None  # None は採点の対象外
+    latency_ms: int
+    tokens: int
+    route: str | None
+
+
+def citation_ok(required: list[str], cited_sources: list[str]) -> bool | None:
+    """必要な出典がすべて含まれているか。required が空なら対象外（None）。"""
+    if not required:
+        return None
+    cited = set(cited_sources)
+    return all(any(alt in cited for alt in req.split("|")) for req in required)
+
+
+def _pct(values: list[bool]) -> str:
+    return f"{sum(values) / len(values):.0%}（{sum(values)}/{len(values)}）" if values else "-"
+
+
+def summarize(records: list[Record], modes: list[str]) -> str:
+    by_mode: dict[str, list[Record]] = defaultdict(list)
+    for r in records:
+        by_mode[r.mode].append(r)
+
+    lines = [
+        "## 全体",
+        "",
+        "| モード | 正答率 | 出典の正しさ | 平均応答時間 | 平均トークン |",
+        "| --- | --- | --- | --- | --- |",
+    ]
+    for m in modes:
+        rs = by_mode[m]
+        if not rs:
+            continue
+        cites = [r.citation_ok for r in rs if r.citation_ok is not None]
+        latency = sum(r.latency_ms for r in rs) / len(rs) / 1000
+        tokens = sum(r.tokens for r in rs) / len(rs)
+        lines.append(
+            f"| {MODE_LABELS[m]} | {_pct([r.correct for r in rs])} | {_pct(cites)} "
+            f"| {latency:.1f}秒 | {tokens:,.0f} |"
+        )
+
+    types = [t for t in TYPE_LABELS if any(r.type == t for r in records)]
+    lines += [
+        "",
+        "## 質問の種類ごとの正答率",
+        "",
+        "| 種類 | " + " | ".join(MODE_LABELS[m] for m in modes) + " |",
+        "| --- |" + " --- |" * len(modes),
+    ]
+    for t in types:
+        cells = [_pct([r.correct for r in by_mode[m] if r.type == t]) for m in modes]
+        lines.append(f"| {TYPE_LABELS[t]} | " + " | ".join(cells) + " |")
+
+    auto = by_mode.get("auto", [])
+    if auto:
+        complex_n = sum(r.route == "complex" for r in auto)
+        lines += [
+            "",
+            f"自動モードは {len(auto)} 問中 {complex_n} 問をエージェントに、"
+            f"{len(auto) - complex_n} 問を単純なRAGに振り分けた。",
+        ]
+
+    ids = sorted({r.id for r in records})
+    index = {(r.id, r.mode): r for r in records}
+    lines += [
+        "",
+        "## 質問ごとの結果（○正解 ×不正解、括弧内は出典）",
+        "",
+        "| ID | 種類 | " + " | ".join(MODE_LABELS[m] for m in modes) + " |",
+        "| --- | --- |" + " --- |" * len(modes),
+    ]
+    for qid in ids:
+        cells = []
+        qtype = ""
+        for m in modes:
+            r = index.get((qid, m))
+            if r is None:
+                cells.append("-")
+                continue
+            qtype = TYPE_LABELS.get(r.type, r.type)
+            mark = "○" if r.correct else "×"
+            if r.citation_ok is not None:
+                mark += "（○）" if r.citation_ok else "（×）"
+            if r.route:
+                mark += f" {r.route}"
+            cells.append(mark)
+        lines.append(f"| {qid} | {qtype} | " + " | ".join(cells) + " |")
+    return "\n".join(lines) + "\n"
 
 
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--eval", default="../eval/eval_set.jsonl")
     parser.add_argument("--out", default="../eval/results.md")
+    parser.add_argument("--modes", default=",".join(MODES))
+    parser.add_argument("--top-k", type=int, default=None, help="検索で取る件数を上書きする")
+    parser.add_argument("--limit", type=int, default=None, help="先頭から n 問だけ実行する")
     args = parser.parse_args()
 
+    from app.main import get_agent
+
+    modes = [m.strip() for m in args.modes.split(",") if m.strip() in MODES]
     agent = get_agent()
+    if args.top_k:
+        agent._top_k = args.top_k
     llm = agent._llm  # 採点にも同じモデルを使う
+
     items = [
         json.loads(line)
         for line in Path(args.eval).read_text(encoding="utf-8").splitlines()
         if line.strip()
-    ]
+    ][: args.limit]
 
-    stats = {m: {"correct": 0, "latency": 0, "tokens": 0} for m in ("baseline", "agent")}
-    rows = []
+    records: list[Record] = []
     for item in items:
-        row = {"id": item["id"]}
-        for mode in ("baseline", "agent"):
-            res = (
-                agent.ask_baseline(item["question"])
-                if mode == "baseline"
-                else agent.ask_agent(item["question"])
-            )
+        for mode in modes:
+            res = agent.ask(item["question"], mode)
             verdict, _ = llm.chat(
                 [
                     {"role": "system", "content": JUDGE_PROMPT},
@@ -57,28 +174,21 @@ def main() -> None:
                 ],
                 json_mode=True,
             )
-            ok = bool(parse_json(verdict).get("correct"))
-            stats[mode]["correct"] += ok
-            stats[mode]["latency"] += res.latency_ms
-            stats[mode]["tokens"] += res.usage.prompt_tokens + res.usage.completion_tokens
-            row[mode] = "○" if ok else "×"
-        rows.append(row)
-        print(row)
+            record = Record(
+                id=item["id"],
+                type=item.get("type", "single"),
+                mode=mode,
+                correct=bool(parse_json(verdict).get("correct")),
+                citation_ok=citation_ok(item.get("sources", []), [c.source for c in res.citations]),
+                latency_ms=res.latency_ms,
+                tokens=res.usage.prompt_tokens + res.usage.completion_tokens,
+                route=res.route,
+            )
+            records.append(record)
+            print(record)
 
-    n = len(items) or 1
-    lines = [
-        "| モード | 正答率 | 平均応答時間 | 平均トークン |",
-        "| --- | --- | --- | --- |",
-    ]
-    for mode, label in (("baseline", "単純なRAG"), ("agent", "エージェント型RAG")):
-        s = stats[mode]
-        accuracy = s["correct"] / n
-        latency_sec = s["latency"] / n / 1000
-        tokens = s["tokens"] / n
-        lines.append(f"| {label} | {accuracy:.0%} | {latency_sec:.1f}秒 | {tokens:,.0f} |")
-    lines += ["", "| ID | 単純なRAG | エージェント型RAG |", "| --- | --- | --- |"]
-    lines += [f"| {r['id']} | {r['baseline']} | {r['agent']} |" for r in rows]
-    Path(args.out).write_text("\n".join(lines) + "\n", encoding="utf-8")
+    header = f"# 評価結果\n\n問題数: {len(items)}、検索件数（top_k）: {agent._top_k}\n\n"
+    Path(args.out).write_text(header + summarize(records, modes), encoding="utf-8")
     print(f"結果を {args.out} に書き出しました")
 
 

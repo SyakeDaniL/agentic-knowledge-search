@@ -11,7 +11,7 @@ const EXAMPLES = [
 
 export default function App() {
   const [question, setQuestion] = useState("");
-  const [mode, setMode] = useState<Mode>("agent");
+  const [mode, setMode] = useState<Mode>("auto");
   const [result, setResult] = useState<AskResponse | null>(null);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
@@ -36,7 +36,7 @@ export default function App() {
       <header>
         <h1>Agentic Knowledge Search</h1>
         <p className="lead">
-          架空の会社「Contoso Japan」の社内規程を、AIが検索を計画・検索し直してから出典つきで答えます。
+          架空の会社「Contoso Japan」の社内規程を、AIが検索を計画・検索し直してから出典つきで答えます。自動モードでは、簡単な質問は速い単純なRAGで、複雑な質問だけエージェントで答えます。
         </p>
       </header>
 
@@ -49,6 +49,10 @@ export default function App() {
           maxLength={500}
         />
         <div className="controls">
+          <label>
+            <input type="radio" checked={mode === "auto"} onChange={() => setMode("auto")} />
+            自動（おすすめ）
+          </label>
           <label>
             <input type="radio" checked={mode === "agent"} onChange={() => setMode("agent")} />
             エージェント型RAG

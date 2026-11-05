@@ -94,6 +94,56 @@ def test_baseline_searches_once_with_the_raw_question():
     assert res.citations[0].title == "経費精算規程"
 
 
+def test_auto_routes_simple_question_to_baseline():
+    llm = FakeLLM(
+        [
+            json.dumps({"route": "simple", "reason": "1つの事実"}),
+            "在宅勤務手当は月3,000円です[1]。",
+        ]
+    )
+    retriever = FakeRetriever({"在宅勤務手当は？": [EXPENSE]})
+    agent = KnowledgeAgent(llm, retriever)
+
+    res = agent.ask("在宅勤務手当は？", "auto")
+
+    assert res.mode == "auto"
+    assert res.route == "simple"
+    assert [s.kind for s in res.trace] == ["route", "search", "answer"]
+    assert res.usage.llm_calls == 2
+
+
+def test_auto_routes_complex_question_to_agent():
+    llm = FakeLLM(
+        [
+            json.dumps({"route": "complex", "reason": "論点が2つ"}),
+            json.dumps({"queries": ["在宅勤務手当", "私物PC 業務"]}),
+            json.dumps({"sufficient": True, "missing": "", "next_queries": []}),
+            "手当は月3,000円です[1]。私物PCは禁止です[2]。",
+        ]
+    )
+    retriever = FakeRetriever({"在宅勤務手当": [EXPENSE], "私物PC 業務": [SECURITY]})
+    agent = KnowledgeAgent(llm, retriever)
+
+    res = agent.ask("手当と私物PCについて", "auto")
+
+    assert res.route == "complex"
+    assert [s.kind for s in res.trace][:2] == ["route", "plan"]
+
+
+def test_auto_falls_back_to_agent_when_route_is_unreadable():
+    llm = FakeLLM(
+        [
+            "わかりません",
+            json.dumps({"queries": ["在宅勤務手当"]}),
+            json.dumps({"sufficient": True, "missing": "", "next_queries": []}),
+            "月3,000円です[1]。",
+        ]
+    )
+    agent = KnowledgeAgent(llm, FakeRetriever({"在宅勤務手当": [EXPENSE]}))
+
+    assert agent.ask("在宅勤務手当は？", "auto").route == "complex"
+
+
 def test_api_health_and_rate_limit():
     app = create_app(Settings(daily_request_limit=1))
     llm = FakeLLM(["回答です[1]。"])

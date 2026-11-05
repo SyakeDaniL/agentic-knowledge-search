@@ -1,4 +1,4 @@
-export type Mode = "agent" | "baseline";
+export type Mode = "auto" | "agent" | "baseline";
 
 export interface Citation {
   number: number;
@@ -8,7 +8,7 @@ export interface Citation {
 }
 
 export interface TraceStep {
-  kind: "plan" | "search" | "judge" | "answer";
+  kind: "route" | "plan" | "search" | "judge" | "answer";
   detail: string;
   queries: string[];
   hits: number;
@@ -27,4 +27,5 @@ export interface AskResponse {
   usage: Usage;
   latency_ms: number;
   mode: Mode;
+  route: "simple" | "complex" | null;
 }
