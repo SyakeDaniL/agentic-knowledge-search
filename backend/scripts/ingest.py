@@ -15,6 +15,8 @@ from app.config import get_settings
 from app.llm import AzureOpenAILLM
 
 MAX_CHARS = 800
+# 「経費精算規程 第4条（…）の改定」のように、別の規程の条文を指す見出し
+ARTICLE_REF = re.compile(r"^(\S+規程) (第\d+条)")
 
 
 def split_markdown(text: str, max_chars: int = MAX_CHARS) -> list[tuple[str, str]]:
@@ -45,6 +47,25 @@ def split_markdown(text: str, max_chars: int = MAX_CHARS) -> list[tuple[str, str
     return chunks
 
 
+def link_related(docs: list[dict]) -> None:
+    """改定のお知らせなどの各節に、参照先の条文の本文を検索用の文脈として付ける。
+
+    改定のお知らせは「上限を3万円から5万円に」のように変更点しか書かないため、
+    条文側の言葉（モニター・キーボードなど）で検索すると上位に出てこない。
+    related は検索とベクトル化にだけ使い、LLM には渡さない。
+    """
+    articles: dict[tuple[str, str], str] = {}
+    for d in docs:
+        doc_title, _, head = d["title"].partition(" / ")
+        m = re.match(r"^(第\d+条)", head)
+        if m:
+            articles[(doc_title, m.group(1))] = f"{head}\n{d['content']}"
+    for d in docs:
+        _, _, head = d["title"].partition(" / ")
+        m = ARTICLE_REF.match(head)
+        d["related"] = articles.get((m.group(1), m.group(2)), "") if m else ""
+
+
 def ensure_index(settings) -> None:
     from azure.core.credentials import AzureKeyCredential
     from azure.search.documents.indexes import SearchIndexClient
@@ -71,6 +92,9 @@ def ensure_index(settings) -> None:
             ),
             SearchableField(
                 name="content", type=SearchFieldDataType.String, analyzer_name="ja.microsoft"
+            ),
+            SearchableField(
+                name="related", type=SearchFieldDataType.String, analyzer_name="ja.microsoft"
             ),
             SimpleField(name="source", type=SearchFieldDataType.String, filterable=True),
             SearchField(
@@ -110,10 +134,12 @@ def main() -> None:
             chunk_id = hashlib.sha1(f"{path.name}-{i}".encode()).hexdigest()
             docs.append({"id": chunk_id, "title": title, "content": body, "source": path.name})
 
-    print(f"{len(docs)} 件のチャンクをベクトル化します")
+    link_related(docs)
+    linked = sum(1 for d in docs if d["related"])
+    print(f"{len(docs)} 件のチャンクをベクトル化します（関連条文つき: {linked} 件）")
     for start in range(0, len(docs), 16):
         batch = docs[start : start + 16]
-        vectors = llm.embed([f"{d['title']}\n{d['content']}" for d in batch])
+        vectors = llm.embed([f"{d['title']}\n{d['content']}\n{d['related']}" for d in batch])
         for d, v in zip(batch, vectors, strict=True):
             d["content_vector"] = v
 
