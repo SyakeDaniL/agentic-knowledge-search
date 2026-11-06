@@ -1,4 +1,4 @@
-# 文書の取り込みと評価（検索件数5件・3件）をまとめて実行する（Windows PowerShell 用）。
+﻿# 文書の取り込みと評価（検索件数5件・3件）をまとめて実行する（Windows PowerShell 用）。
 # 使い方（リポジトリのルートで）:
 #   powershell -ExecutionPolicy Bypass -File backend\scripts\run_all.ps1
 # 結果は eval\results\<日付>_top5.md と <日付>_top3.md に保存される。
