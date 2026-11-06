@@ -177,3 +177,21 @@ def test_follow_up_search_results_reach_the_answer_even_when_context_is_full():
 
     answer_prompt = llm.calls[-1][-1]["content"]
     assert "改定のお知らせ" in answer_prompt
+
+
+def test_plan_keeps_up_to_five_queries():
+    queries = ["在宅勤務手当", "在宅勤務手当 改定", "備品 補助", "備品 補助 改定", "私物PC", "余分"]
+    llm = FakeLLM(
+        [
+            json.dumps({"queries": queries}),
+            json.dumps({"sufficient": True, "missing": "", "next_queries": []}),
+            "回答です。",
+        ]
+    )
+    retriever = FakeRetriever({})
+    retriever.table = {q: [] for q in queries}
+    agent = KnowledgeAgent(llm, retriever)
+
+    res = agent.ask_agent("質問")
+
+    assert res.trace[0].queries == queries[:5]

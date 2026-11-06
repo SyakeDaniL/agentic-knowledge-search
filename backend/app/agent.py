@@ -27,6 +27,8 @@ from .models import AskResponse, Chunk, Citation, TraceStep, Usage
 from .search import Retriever, search_all
 
 MAX_CONTEXT_CHUNKS = 12
+# 計画で使う検索クエリの上限（論点ごとの「〇〇 改定」の確認を含めるため5件）
+MAX_QUERIES = 5
 
 
 @dataclass
@@ -307,7 +309,7 @@ def _clean_queries(raw: object) -> list[str]:
     for q in raw:
         if isinstance(q, str) and q.strip() and q.strip() not in out:
             out.append(q.strip())
-    return out[:3]
+    return out[:MAX_QUERIES]
 
 
 def _citations_from(answer: str, chunks: list[Chunk]) -> list[Citation]:
