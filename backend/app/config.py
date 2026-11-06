@@ -33,6 +33,25 @@ class Settings:
     search_api_key: str = field(default_factory=lambda: _env("AZURE_SEARCH_API_KEY"))
     search_index: str = field(default_factory=lambda: _env("AZURE_SEARCH_INDEX", "knowledge"))
 
+    # Azure OpenAI Decisions API（任意。3つとも設定したときだけ使う）
+    decisions_endpoint: str = field(default_factory=lambda: _env("AZURE_DECISIONS_ENDPOINT"))
+    decisions_api_key: str = field(default_factory=lambda: _env("AZURE_DECISIONS_API_KEY"))
+    decisions_deployment: str = field(default_factory=lambda: _env("AZURE_DECISIONS_DEPLOYMENT"))
+    # 「複雑」の確率がこれ以上ならエージェントに回す（取りこぼしを避けるため低めにする）
+    route_complex_threshold: float = field(
+        default_factory=lambda: float(_env("ROUTE_COMPLEX_THRESHOLD", "0.4"))
+    )
+    # 「根拠が十分」の確率がこれ以上なら追加検索をしない
+    judge_sufficient_threshold: float = field(
+        default_factory=lambda: float(_env("JUDGE_SUFFICIENT_THRESHOLD", "0.7"))
+    )
+
+    @property
+    def decisions_enabled(self) -> bool:
+        return bool(
+            self.decisions_endpoint and self.decisions_api_key and self.decisions_deployment
+        )
+
     # エージェント
     max_iterations: int = field(default_factory=lambda: int(_env("AGENT_MAX_ITERATIONS", "3")))
     top_k: int = field(default_factory=lambda: int(_env("SEARCH_TOP_K", "5")))

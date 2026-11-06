@@ -21,8 +21,19 @@ def get_agent() -> KnowledgeAgent:
     settings = get_settings()
     llm = AzureOpenAILLM(settings)
     retriever = AzureSearchRetriever(settings, llm)
+    decider = None
+    if settings.decisions_enabled:
+        from .decisions import AzureDecisionsClient
+
+        decider = AzureDecisionsClient(settings)
     return KnowledgeAgent(
-        llm, retriever, max_iterations=settings.max_iterations, top_k=settings.top_k
+        llm,
+        retriever,
+        max_iterations=settings.max_iterations,
+        top_k=settings.top_k,
+        decider=decider,
+        route_complex_threshold=settings.route_complex_threshold,
+        judge_sufficient_threshold=settings.judge_sufficient_threshold,
     )
 
 

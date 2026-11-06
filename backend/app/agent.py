@@ -8,6 +8,10 @@
 
 自動モード（auto）は、最初に質問を simple / complex に分類し、
 simple は単純なRAG、complex はエージェントで答える。精度と速度・費用の両立が目的。
+
+Decisions API（decisions.py）を設定すると、振り分けと judge の「十分か」の判定を
+確率つきの型付き判定で行い、しきい値で分岐する。未設定なら LLM の JSON 出力で判定する。
+各ステップの所要時間は TraceStep.elapsed_ms に記録する。
 """
 
 from __future__ import annotations
@@ -17,9 +21,10 @@ import time
 from dataclasses import dataclass, field
 
 from . import prompts
+from .decisions import Decider
 from .llm import LLM, parse_json
 from .models import AskResponse, Chunk, Citation, TraceStep, Usage
-from .search import Retriever
+from .search import Retriever, search_all
 
 MAX_CONTEXT_CHUNKS = 12
 
@@ -35,12 +40,27 @@ class _State:
 
 class KnowledgeAgent:
     def __init__(
-        self, llm: LLM, retriever: Retriever, *, max_iterations: int = 3, top_k: int = 5
+        self,
+        llm: LLM,
+        retriever: Retriever,
+        *,
+        max_iterations: int = 3,
+        top_k: int = 5,
+        decider: Decider | None = None,
+        route_complex_threshold: float = 0.4,
+        judge_sufficient_threshold: float = 0.7,
     ) -> None:
         self._llm = llm
         self._retriever = retriever
         self._max_iterations = max_iterations
         self._top_k = top_k
+        self._decider = decider
+        self._route_threshold = route_complex_threshold
+        self._judge_threshold = judge_sufficient_threshold
+
+    @property
+    def decision_engine(self) -> str:
+        return "decisions_api" if self._decider else "llm"
 
     # ---- 公開メソッド ----
 
@@ -55,13 +75,16 @@ class KnowledgeAgent:
         """質問を振り分けてから、単純なRAGかエージェントで答える。"""
         started = time.perf_counter()
         route, reason, usage = self._route(question)
+        route_ms = _ms_since(started)
         res = self.ask_agent(question) if route == "complex" else self.ask_baseline(question)
         label = "複雑な質問 → エージェント" if route == "complex" else "単純な質問 → 単純なRAG"
-        res.trace.insert(0, TraceStep(kind="route", detail=f"{label}（{reason}）"))
+        res.trace.insert(
+            0, TraceStep(kind="route", detail=f"{label}（{reason}）", elapsed_ms=route_ms)
+        )
         res.usage.add(usage)
         res.mode = "auto"
         res.route = route
-        res.latency_ms = int((time.perf_counter() - started) * 1000)
+        res.latency_ms = _ms_since(started)
         return res
 
     def ask_agent(self, question: str) -> AskResponse:
@@ -84,8 +107,9 @@ class KnowledgeAgent:
             citations=citations,
             trace=state.trace,
             usage=state.usage,
-            latency_ms=int((time.perf_counter() - started) * 1000),
+            latency_ms=_ms_since(started),
             mode="agent",
+            decision_engine=self.decision_engine,
         )
 
     def ask_baseline(self, question: str) -> AskResponse:
@@ -99,13 +123,28 @@ class KnowledgeAgent:
             citations=citations,
             trace=state.trace,
             usage=state.usage,
-            latency_ms=int((time.perf_counter() - started) * 1000),
+            latency_ms=_ms_since(started),
             mode="baseline",
+            decision_engine=self.decision_engine,
         )
 
     # ---- 各ステップ ----
 
     def _route(self, question: str) -> tuple[str, str, Usage]:
+        if self._decider is not None:
+            probs, usage = self._decider.choose(
+                question,
+                name="route",
+                instructions=prompts.ROUTE_DECISION,
+                choices=[
+                    ("simple", "1つの規程の1つの事実を聞いている"),
+                    ("complex", "論点が複数・規程の組み合わせ・適用範囲や改定の確認・計算が必要"),
+                ],
+            )
+            p_complex = probs.get("complex", 1.0 - probs.get("simple", 0.0))
+            route = "complex" if p_complex >= self._route_threshold else "simple"
+            return route, f"Decisions API: 複雑である確率 {p_complex:.2f}", usage
+
         text, usage = self._llm.chat(
             [
                 {"role": "system", "content": prompts.ROUTE_SYSTEM},
@@ -120,6 +159,7 @@ class KnowledgeAgent:
         return route, reason, usage
 
     def _plan(self, question: str, state: _State) -> list[str]:
+        started = time.perf_counter()
         text, usage = self._llm.chat(
             [
                 {"role": "system", "content": prompts.PLAN_SYSTEM},
@@ -130,17 +170,25 @@ class KnowledgeAgent:
         state.usage.add(usage)
         queries = _clean_queries(parse_json(text).get("queries")) or [question]
         state.trace.append(
-            TraceStep(kind="plan", detail="質問を分解して検索を計画", queries=queries)
+            TraceStep(
+                kind="plan",
+                detail="質問を分解して検索を計画",
+                queries=queries,
+                elapsed_ms=_ms_since(started),
+            )
         )
         return queries
 
     def _search(self, queries: list[str], state: _State) -> None:
+        started = time.perf_counter()
         new_queries = [q for q in queries if q not in state.seen_queries]
         known_ids = {c.id for c in state.chunks}
         added = 0
-        for q in new_queries:
+        # 複数クエリはまとめてベクトル化し、並列に検索する（search.search_all）
+        for q, hits in zip(
+            new_queries, search_all(self._retriever, new_queries, self._top_k), strict=True
+        ):
             state.seen_queries.add(q)
-            hits = self._retriever.search(q, self._top_k)
             state.hits_by_query.append(hits)
             for chunk in hits:
                 if chunk.id not in known_ids:
@@ -153,18 +201,35 @@ class KnowledgeAgent:
                 detail=f"ハイブリッド検索で新しい文書を{added}件取得",
                 queries=new_queries,
                 hits=added,
+                elapsed_ms=_ms_since(started),
             )
         )
 
     def _judge(self, question: str, state: _State) -> tuple[bool, list[str]]:
+        started = time.perf_counter()
+        material = f"質問: {question}\n\n文書:\n" + prompts.format_context(_select_context(state))
+
+        # Decisions API があれば、まず「十分か」だけを確率で判定する。
+        # 十分なら追加クエリの生成（LLM 呼び出し）を省ける
+        if self._decider is not None:
+            p, usage = self._decider.probability(
+                material, name="evidence_sufficient", instructions=prompts.JUDGE_DECISION
+            )
+            state.usage.add(usage)
+            if p >= self._judge_threshold:
+                state.trace.append(
+                    TraceStep(
+                        kind="judge",
+                        detail=f"根拠は十分（Decisions API: 確率 {p:.2f}）",
+                        elapsed_ms=_ms_since(started),
+                    )
+                )
+                return True, []
+
         text, usage = self._llm.chat(
             [
                 {"role": "system", "content": prompts.JUDGE_SYSTEM},
-                {
-                    "role": "user",
-                    "content": f"質問: {question}\n\n文書:\n"
-                    + prompts.format_context(_select_context(state)),
-                },
+                {"role": "user", "content": material},
             ],
             json_mode=True,
         )
@@ -178,11 +243,13 @@ class KnowledgeAgent:
                 kind="judge",
                 detail=detail,
                 queries=[] if sufficient else next_queries,
+                elapsed_ms=_ms_since(started),
             )
         )
         return sufficient, next_queries
 
     def _answer(self, question: str, state: _State) -> tuple[str, list[Citation]]:
+        started = time.perf_counter()
         context_chunks = _select_context(state)
         if not context_chunks:
             state.trace.append(TraceStep(kind="answer", detail="根拠なし"))
@@ -200,8 +267,18 @@ class KnowledgeAgent:
         )
         state.usage.add(usage)
         citations = _citations_from(text, context_chunks)
-        state.trace.append(TraceStep(kind="answer", detail=f"出典{len(citations)}件で回答を作成"))
+        state.trace.append(
+            TraceStep(
+                kind="answer",
+                detail=f"出典{len(citations)}件で回答を作成",
+                elapsed_ms=_ms_since(started),
+            )
+        )
         return text.strip(), citations
+
+
+def _ms_since(started: float) -> int:
+    return int((time.perf_counter() - started) * 1000)
 
 
 def _select_context(state: _State) -> list[Chunk]:

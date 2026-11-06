@@ -15,6 +15,7 @@ export function TraceView({ steps }: { steps: TraceStep[] }) {
         <li key={i} className={`trace-step trace-${step.kind}`}>
           <span className="trace-label">{LABELS[step.kind]}</span>
           <span>{step.detail}</span>
+          <span className="trace-time">{(step.elapsed_ms / 1000).toFixed(2)}秒</span>
           {step.queries.length > 0 && (
             <ul className="trace-queries">
               {step.queries.map((q) => (

@@ -12,6 +12,7 @@ export interface TraceStep {
   detail: string;
   queries: string[];
   hits: number;
+  elapsed_ms: number;
 }
 
 export interface Usage {
@@ -28,4 +29,5 @@ export interface AskResponse {
   latency_ms: number;
   mode: Mode;
   route: "simple" | "complex" | null;
+  decision_engine: "llm" | "decisions_api";
 }

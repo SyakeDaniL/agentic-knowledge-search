@@ -42,3 +42,15 @@ def test_eval_set_sources_point_to_existing_docs():
                 assert alt in doc_names, f"{item['id']}: {alt} がありません"
         if item["type"] == "unanswerable":
             assert item["sources"] == []
+
+
+def test_summarize_reports_average_time_per_step():
+    records = [
+        Record(
+            "q1", "single", "auto", True, True, 1000, 100, "simple", {"route": 400, "answer": 600}
+        ),
+        Record("q2", "hard", "auto", True, True, 3000, 900, "complex", {"route": 600, "plan": 800}),
+    ]
+    text = summarize(records, ["auto"])
+
+    assert "| 自動（振り分け） | 0.50秒 | 0.80秒 | - | - | 0.60秒 |" in text

@@ -108,7 +108,8 @@ export default function App() {
           <p className="meta">
             {(result.latency_ms / 1000).toFixed(1)}秒・LLM呼び出し{result.usage.llm_calls}回・
             {(result.usage.prompt_tokens + result.usage.completion_tokens).toLocaleString()}
-            トークン
+            トークン・振り分けと判定:{" "}
+            {result.decision_engine === "decisions_api" ? "Decisions API" : "LLM"}
           </p>
         </section>
       )}

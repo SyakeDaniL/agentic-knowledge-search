@@ -33,6 +33,7 @@ class TraceStep(BaseModel):
     detail: str
     queries: list[str] = Field(default_factory=list)
     hits: int = 0
+    elapsed_ms: int = 0
 
 
 class Usage(BaseModel):
@@ -63,3 +64,4 @@ class AskResponse(BaseModel):
     latency_ms: int
     mode: Mode
     route: Route | None = None  # auto モードで振り分けた先
+    decision_engine: Literal["llm", "decisions_api"] = "llm"  # 振り分け・判定に使った仕組み

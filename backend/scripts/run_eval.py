@@ -11,6 +11,9 @@
   （"a.md|b.md" はどちらか一方でよい。答えがない質問は対象外）
 - 平均応答時間・平均トークン数
 - 自動モードが、どれだけの質問をエージェントに回したか
+- 段階ごと（振り分け・計画・検索・判定・回答）の平均時間
+
+Decisions API の環境変数を設定していれば、振り分けと判定はそちらで行われる（結果の先頭に表示）。
 """
 
 from __future__ import annotations
@@ -18,13 +21,20 @@ from __future__ import annotations
 import argparse
 import json
 from collections import defaultdict
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from app.llm import parse_json
 
 MODES = ("baseline", "agent", "auto")
 MODE_LABELS = {"baseline": "単純なRAG", "agent": "エージェント型RAG", "auto": "自動（振り分け）"}
+STEP_LABELS = {
+    "route": "振り分け",
+    "plan": "計画",
+    "search": "検索",
+    "judge": "判定",
+    "answer": "回答",
+}
 TYPE_LABELS = {
     "single": "1つの文書",
     "multi_hop": "複数の文書",
@@ -49,6 +59,7 @@ class Record:
     latency_ms: int
     tokens: int
     route: str | None
+    step_ms: dict[str, int] = field(default_factory=dict)  # 段階ごとの合計時間
 
 
 def citation_ok(required: list[str], cited_sources: list[str]) -> bool | None:
@@ -98,6 +109,20 @@ def summarize(records: list[Record], modes: list[str]) -> str:
         cells = [_pct([r.correct for r in by_mode[m] if r.type == t]) for m in modes]
         lines.append(f"| {TYPE_LABELS[t]} | " + " | ".join(cells) + " |")
 
+    lines += [
+        "",
+        "## 段階ごとの平均時間（その段階を通った質問だけで平均）",
+        "",
+        "| モード | " + " | ".join(STEP_LABELS.values()) + " |",
+        "| --- |" + " --- |" * len(STEP_LABELS),
+    ]
+    for m in modes:
+        cells = []
+        for kind in STEP_LABELS:
+            values = [r.step_ms[kind] for r in by_mode[m] if kind in r.step_ms]
+            cells.append(f"{sum(values) / len(values) / 1000:.2f}秒" if values else "-")
+        lines.append(f"| {MODE_LABELS[m]} | " + " | ".join(cells) + " |")
+
     auto = by_mode.get("auto", [])
     if auto:
         complex_n = sum(r.route == "complex" for r in auto)
@@ -133,6 +158,13 @@ def summarize(records: list[Record], modes: list[str]) -> str:
             cells.append(mark)
         lines.append(f"| {qid} | {qtype} | " + " | ".join(cells) + " |")
     return "\n".join(lines) + "\n"
+
+
+def _step_ms(trace) -> dict[str, int]:
+    totals: dict[str, int] = {}
+    for step in trace:
+        totals[step.kind] = totals.get(step.kind, 0) + step.elapsed_ms
+    return totals
 
 
 def main() -> None:
@@ -183,11 +215,16 @@ def main() -> None:
                 latency_ms=res.latency_ms,
                 tokens=res.usage.prompt_tokens + res.usage.completion_tokens,
                 route=res.route,
+                step_ms=_step_ms(res.trace),
             )
             records.append(record)
             print(record)
 
-    header = f"# 評価結果\n\n問題数: {len(items)}、検索件数（top_k）: {agent._top_k}\n\n"
+    engine = "Decisions API" if agent.decision_engine == "decisions_api" else "LLM（JSON出力）"
+    header = (
+        f"# 評価結果\n\n問題数: {len(items)}、検索件数（top_k）: {agent._top_k}、"
+        f"振り分け・判定: {engine}\n\n"
+    )
     Path(args.out).write_text(header + summarize(records, modes), encoding="utf-8")
     print(f"結果を {args.out} に書き出しました")
 
