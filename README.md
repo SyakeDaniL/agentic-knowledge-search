@@ -96,6 +96,8 @@ python -m scripts.run_eval            # 結果は eval/results.md に出力（�
 python -m scripts.run_eval --top-k 3  # 検索件数を絞った、より厳しい条件
 ```
 
+Windows では、取り込みと2条件の評価を `powershell -ExecutionPolicy Bypass -File backend\scripts\run_all.ps1` でまとめて実行できます。
+
 ### 結果
 
 2026年11月5日、40問で計測しました。結果の全文は [`eval/results/`](eval/results/) にあります。
