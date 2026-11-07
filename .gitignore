@@ -21,3 +21,6 @@ dist/
 # 評価の生出力
 eval/results.md
 *.tsbuildinfo
+
+# ローカルだけのメモ（引き継ぎなど）
+*.local.md
