@@ -9,14 +9,15 @@ permissions:
   contents: read
   packages: write # ghcr.io へのイメージ公開
 
-env:
-  IMAGE: ghcr.io/${{ github.repository_owner }}/agentic-knowledge-search-api
-
 jobs:
   deploy:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
+      # イメージ名は小文字でなければならない（ユーザー名に大文字が含まれるため変換する）
+      - name: Set image name
+        run: echo "IMAGE=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/agentic-knowledge-search-api" >> "$GITHUB_ENV"
 
       - name: Build and push API image
         run: |
