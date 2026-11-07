@@ -3,7 +3,21 @@
 社内文書を、AIが**検索を計画し、足りなければ検索し直してから**出典つきで答える「エージェント型RAG」のデモです。
 題材は架空の会社「Contoso Japan 株式会社」の社内規程・FAQ です。
 
-> 🚧 開発中（2026年12月公開予定）。デモURL・評価結果・動画は公開時に追記します。
+**デモ:** https://nice-sand-005e51e00.5.azurestaticapps.net
+（1つのIPにつき1日30回まで。使われていないときはサーバーを0台にしているため、最初の質問は応答まで少し時間がかかります）
+
+![デモ: 質問すると、振り分け・検索の計画・判定を経て、出典つきで答える](docs/demo.gif)
+
+### 結果の要約（40問の評価セット、[詳細](#評価)）
+
+| | 単純なRAG | エージェント型RAG |
+| --- | --- | --- |
+| 全体の正答率 | 92% | **100%** |
+| 惑わせる文書（子会社の規程・旧版・古いFAQ）がある質問 | 78% | **100%** |
+| 平均応答時間 / 平均トークン | 3.2秒 / 659 | 10.4秒 / 2,317 |
+
+精度と速度・費用の両立のため、既定の「自動モード」は簡単な質問だけ単純なRAGに回し、正答率98%・トークン28%減。
+評価で原因を特定して直す、を3回繰り返しています（[改善の記録](#結果)）。
 
 ## 特徴
 
@@ -20,12 +34,14 @@
 
 ## 構成
 
-```
-ユーザー → React（Static Web Apps）→ FastAPI（Container Apps）
-                                        ├─ Azure OpenAI（gpt-4.1-mini / text-embedding-3-small）
-                                        └─ Azure AI Search（ハイブリッド検索）
-架空の社内文書 → 取り込みスクリプト（分割→ベクトル化→登録）→ Azure AI Search
-GitHub Actions ＋ Bicep で自動デプロイ
+```mermaid
+flowchart LR
+  U[ユーザー] --> W["React<br/>Static Web Apps"]
+  W --> A["FastAPI<br/>Container Apps"]
+  A --> O["Azure OpenAI<br/>gpt-4.1-mini / text-embedding-3-small"]
+  A --> S["Azure AI Search<br/>ハイブリッド検索"]
+  D[架空の社内文書] --> I["取り込みスクリプト<br/>分割→関連条文の付与→ベクトル化"] --> S
+  G["GitHub Actions + Bicep<br/>OIDCで自動デプロイ"] -.-> A & W
 ```
 
 自動モード（`/api/ask` の既定）は、最初に質問を「単純」か「複雑」に振り分けます。
@@ -34,7 +50,7 @@ GitHub Actions ＋ Bicep で自動デプロイ
 
 エージェントの流れ（`backend/app/agent.py`）:
 
-1. **plan** 質問を1〜3個の検索クエリに分解する
+1. **plan** 質問を1〜5個の検索クエリに分解する（金額・期限などの論点には「改定」の確認クエリも加える）
 2. **search** 各クエリでハイブリッド検索し、新しい文書だけを集める
 3. **judge** 根拠が足りるか判定し、足りなければ新しいクエリで 2 に戻る（最大3回）
 4. **answer** 集めた文書だけを根拠に、出典番号つきで答える
@@ -196,6 +212,9 @@ cd frontend && npm install && npm run dev
 1. Azure にリソースグループを作る（例: `az group create -n rg-aks-demo -l japaneast`）
 2. GitHub Actions 用に OIDC でログインできるアプリ登録を作り、リポジトリの Secrets に
    `AZURE_CLIENT_ID` `AZURE_TENANT_ID` `AZURE_SUBSCRIPTION_ID` を、Variables に `AZURE_RESOURCE_GROUP` を登録する
+   - フェデレーション資格情報の subject は、GitHub が実際に送る形式に合わせる。このリポジトリでは
+     `repo:<ユーザー名>@<ユーザーID>/<リポジトリ名>@<リポジトリID>:ref:refs/heads/main` のように ID 付きだった
+     （合わないと `AADSTS700213` になる。実際の値は失敗したログの「subject claim」に出る）
 3. Actions の「Deploy」を手動実行する
 4. 初回は ghcr.io のパッケージ `agentic-knowledge-search-api` を Public にする（Container Apps が取得できるように）
 5. 文書の取り込みはローカルから `python -m scripts.ingest` を実行する
